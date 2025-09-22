@@ -10,7 +10,7 @@ import socket
 IPTV_URL = "http://gm.scvip.net.cn/iptv/iptv.txt"  # 可替换为你的源
 INPUT_FILE = "iptv.m3u"
 OUTPUT_FILE = "best_multicast.txt"
-TIMEOUT = 1          # ping/连接超时 1 秒
+TIMEOUT = 1          # TCP 连接超时 1 秒
 MAX_WORKERS = 50     # 并发线程数
 
 # 节目分组规则
@@ -21,13 +21,18 @@ GROUPS = {
 }
 
 def download_m3u():
-    """下载 IPTV m3u/txt 文件"""
+    """下载 IPTV m3u/txt 文件并保证 UTF-8"""
     try:
         r = requests.get(IPTV_URL, timeout=10)
-        r.encoding = 'utf-8'  # 尝试 UTF-8
+        rawdata = r.content
+        # 检测源文件编码
+        result = chardet.detect(rawdata)
+        encoding = result['encoding'] if result['encoding'] else 'utf-8'
+        text = rawdata.decode(encoding, errors='ignore')
+        # 写入本地文件 UTF-8
         with open(INPUT_FILE, "w", encoding="utf-8") as f:
-            f.write(r.text)
-        print(f"✅ IPTV 下载成功: {INPUT_FILE}")
+            f.write(text)
+        print(f"✅ IPTV 下载成功: {INPUT_FILE} (编码: {encoding})")
     except Exception as e:
         print(f"❌ IPTV 下载失败: {e}")
         if not os.path.exists(INPUT_FILE):
@@ -35,26 +40,18 @@ def download_m3u():
 
 def parse_m3u(file_path):
     """解析 m3u/txt 文件，返回 [(节目名, URL)]"""
-    # 检测文件编码
-    with open(file_path, 'rb') as f:
-        rawdata = f.read()
-        result = chardet.detect(rawdata)
-        encoding = result['encoding'] if result['encoding'] else 'utf-8'
-
     entries = []
-    with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         lines = [line.strip() for line in f if line.strip()]
         i = 0
         while i < len(lines):
             line = lines[i]
-            # #EXTINF 格式
             if line.startswith("#EXTINF"):
                 match = re.search(r',(.+)', line)
                 name = match.group(1).strip() if match else f"Unknown{i}"
                 i += 1
                 url = lines[i] if i < len(lines) else ""
                 entries.append((name, url))
-            # 直接 CSV 格式
             elif "," in line and not line.startswith("#"):
                 parts = line.split(",", 1)
                 if len(parts) == 2:
@@ -70,7 +67,7 @@ def assign_group(name):
         for kw in keywords:
             if kw.lower() in name.lower():
                 return group_name
-    return None  # 不匹配任何组的忽略
+    return None
 
 def check_latency(url, timeout=TIMEOUT):
     """测试直播源延迟，使用 TCP 连接代替 ping"""
