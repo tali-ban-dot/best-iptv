@@ -1,16 +1,17 @@
 import concurrent.futures
-import subprocess
 import re
 from datetime import datetime
 import requests
 import chardet
 import os
+import socket
 
-# IPTV 源文件 URL 或仓库内文件
+# IPTV 源文件 URL
 IPTV_URL = "http://gm.scvip.net.cn/iptv/iptv.txt"  # 可替换为你的源
 INPUT_FILE = "iptv.m3u"
 OUTPUT_FILE = "best_multicast.txt"
-TIMEOUT = 3  # 秒
+TIMEOUT = 1          # ping/连接超时 1 秒
+MAX_WORKERS = 50     # 并发线程数
 
 # 节目分组规则
 GROUPS = {
@@ -23,7 +24,7 @@ def download_m3u():
     """下载 IPTV m3u/txt 文件"""
     try:
         r = requests.get(IPTV_URL, timeout=10)
-        r.encoding = 'utf-8'  # 尝试 utf-8
+        r.encoding = 'utf-8'  # 尝试 UTF-8
         with open(INPUT_FILE, "w", encoding="utf-8") as f:
             f.write(r.text)
         print(f"✅ IPTV 下载成功: {INPUT_FILE}")
@@ -69,28 +70,32 @@ def assign_group(name):
         for kw in keywords:
             if kw.lower() in name.lower():
                 return group_name
-    return "未分组"
+    return None  # 不匹配任何组的忽略
 
-def ping_url(url):
-    """测试 URL 延迟"""
+def check_latency(url, timeout=TIMEOUT):
+    """测试直播源延迟，使用 TCP 连接代替 ping"""
     try:
-        host = re.findall(r'://([^/:]+)', url)[0]
-        result = subprocess.run(
-            ["ping", "-c", "1", "-W", str(TIMEOUT), host],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        match = re.search(r'time=([\d.]+) ms', result.stdout)
-        return float(match.group(1)) if match else float('inf')
+        host_port = re.findall(r'://([^/:]+):?(\d*)', url)
+        if not host_port:
+            return float('inf')
+        host, port = host_port[0]
+        port = int(port) if port else 80
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            start = datetime.now()
+            s.connect((host, port))
+            end = datetime.now()
+            latency = (end - start).total_seconds() * 1000
+            return latency
     except:
         return float('inf')
 
 def speedtest_entries(entries):
     """对每个直播源测速"""
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_entry = {executor.submit(ping_url, url): (name, url) for name, url in entries}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_entry = {executor.submit(check_latency, url): (name, url) for name, url in entries}
         for future in concurrent.futures.as_completed(future_to_entry):
             name, url = future_to_entry[future]
             latency = future.result()
@@ -101,13 +106,12 @@ def main():
     download_m3u()
     all_entries = parse_m3u(INPUT_FILE)
 
-    # 按分组收集
-    group_dict = {}
+    # 按分组收集，只保留三组
+    group_dict = {k: [] for k in GROUPS}
     for name, url in all_entries:
         group = assign_group(name)
-        if group not in group_dict:
-            group_dict[group] = []
-        group_dict[group].append((name, url))
+        if group:
+            group_dict[group].append((name, url))
 
     lines_out = [f"# IPTV 最优组播列表 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"]
 
@@ -121,7 +125,8 @@ def main():
         for name, url, latency in tested:
             lines_out.append(f"{name},{url}")
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    # 输出文件，utf-8-sig 保证中文不乱码
+    with open(OUTPUT_FILE, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(lines_out))
 
     print(f"✅ 已生成 {OUTPUT_FILE}")
