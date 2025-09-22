@@ -1,19 +1,18 @@
-import concurrent.futures
-import re
-from datetime import datetime
 import requests
 import chardet
+import re
 import os
 import socket
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import urllib.parse
 
-# IPTV 源文件 URL
-IPTV_URL = "http://gm.scvip.net.cn/iptv/iptv.txt"  # 可替换为你的源
+IPTV_URL = "http://gm.scvip.net.cn/iptv/iptv.txt"
 INPUT_FILE = "iptv.m3u"
 OUTPUT_FILE = "best_multicast.txt"
-TIMEOUT = 1          # TCP 连接超时 1 秒
-MAX_WORKERS = 50     # 并发线程数
+TIMEOUT = 1
+MAX_WORKERS = 50
 
-# 节目分组规则
 GROUPS = {
     "📺央视频道": ["CCTV", "央视"],
     "📡卫视频道": ["卫视", "湖南", "北京", "东方", "山东", "四川"],
@@ -21,48 +20,47 @@ GROUPS = {
 }
 
 def download_m3u():
-    """下载 IPTV m3u/txt 文件并保证 UTF-8"""
-    try:
-        r = requests.get(IPTV_URL, timeout=10)
-        rawdata = r.content
-        # 检测源文件编码
-        result = chardet.detect(rawdata)
-        encoding = result['encoding'] if result['encoding'] else 'utf-8'
-        text = rawdata.decode(encoding, errors='ignore')
-        # 写入本地文件 UTF-8
-        with open(INPUT_FILE, "w", encoding="utf-8") as f:
-            f.write(text)
-        print(f"✅ IPTV 下载成功: {INPUT_FILE} (编码: {encoding})")
-    except Exception as e:
-        print(f"❌ IPTV 下载失败: {e}")
-        if not os.path.exists(INPUT_FILE):
-            raise RuntimeError("无法获取 IPTV 文件")
+    """下载 IPTV 源并保持原始字节"""
+    r = requests.get(IPTV_URL, timeout=10)
+    with open(INPUT_FILE, "wb") as f:
+        f.write(r.content)
+    print(f"✅ IPTV 下载成功 ({len(r.content)} bytes)")
 
 def parse_m3u(file_path):
-    """解析 m3u/txt 文件，返回 [(节目名, URL)]"""
+    """解析 m3u/txt 文件，保持尾巴原始字节"""
     entries = []
-    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-        lines = [line.strip() for line in f if line.strip()]
+    with open(file_path, "rb") as f:
+        lines = [line.strip() for line in f.readlines() if line.strip()]
         i = 0
         while i < len(lines):
             line = lines[i]
-            if line.startswith("#EXTINF"):
-                match = re.search(r',(.+)', line)
-                name = match.group(1).strip() if match else f"Unknown{i}"
+            if b"#EXTINF" in line:
+                # 尝试检测编码
+                encoding = chardet.detect(line)['encoding'] or 'utf-8'
+                try:
+                    match = re.search(b',(.+)', line)
+                    name_bytes = match.group(1) if match else b"Unknown"
+                    name = name_bytes.decode(encoding, errors='ignore')
+                except:
+                    name = "Unknown"
                 i += 1
-                url = lines[i] if i < len(lines) else ""
+                url = lines[i].decode('utf-8', errors='ignore') if i < len(lines) else ""
                 entries.append((name, url))
-            elif "," in line and not line.startswith("#"):
-                parts = line.split(",", 1)
+            elif b"," in line and not line.startswith(b"#"):
+                parts = line.split(b",", 1)
                 if len(parts) == 2:
-                    name, url = parts
-                    entries.append((name.strip(), url.strip()))
+                    try:
+                        name = parts[0].decode('utf-8', errors='ignore')
+                        url = parts[1].decode('utf-8', errors='ignore')
+                    except:
+                        name = "Unknown"
+                        url = ""
+                    entries.append((name, url))
             i += 1
-    print(f"📌 解析到 {len(entries)} 条 IPTV 条目")
+    print(f"📌 解析 {len(entries)} 条 IPTV 条目")
     return entries
 
 def assign_group(name):
-    """按节目名匹配分组"""
     for group_name, keywords in GROUPS.items():
         for kw in keywords:
             if kw.lower() in name.lower():
@@ -70,14 +68,13 @@ def assign_group(name):
     return None
 
 def check_latency(url, timeout=TIMEOUT):
-    """测试直播源延迟，使用 TCP 连接代替 ping"""
+    """简单 TCP 测速"""
     try:
         host_port = re.findall(r'://([^/:]+):?(\d*)', url)
         if not host_port:
             return float('inf')
         host, port = host_port[0]
         port = int(port) if port else 80
-
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
             start = datetime.now()
@@ -89,11 +86,10 @@ def check_latency(url, timeout=TIMEOUT):
         return float('inf')
 
 def speedtest_entries(entries):
-    """对每个直播源测速"""
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_entry = {executor.submit(check_latency, url): (name, url) for name, url in entries}
-        for future in concurrent.futures.as_completed(future_to_entry):
+        for future in future_to_entry:
             name, url = future_to_entry[future]
             latency = future.result()
             results.append((name, url, latency))
@@ -103,7 +99,7 @@ def main():
     download_m3u()
     all_entries = parse_m3u(INPUT_FILE)
 
-    # 按分组收集，只保留三组
+    # 分组收集
     group_dict = {k: [] for k in GROUPS}
     for name, url in all_entries:
         group = assign_group(name)
@@ -112,17 +108,17 @@ def main():
 
     lines_out = [f"# IPTV 最优组播列表 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"]
 
-    # 每个直播源测速排序
+    # 每组测速排序
     for group_name, entries in group_dict.items():
         if not entries:
             continue
         lines_out.append(f"\n# {group_name}\n")
         tested = speedtest_entries(entries)
-        tested.sort(key=lambda x: x[2])  # 按延迟升序
+        tested.sort(key=lambda x: x[2])
         for name, url, latency in tested:
+            # 尾巴原样保留
             lines_out.append(f"{name},{url}")
 
-    # 输出文件，utf-8-sig 保证中文不乱码
     with open(OUTPUT_FILE, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(lines_out))
 
