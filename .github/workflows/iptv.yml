@@ -1,1 +1,33 @@
+name: IPTV Multicast Speedtest
 
+on:
+  schedule:
+    - cron: "0 0 * * *"  # 每天 UTC 0 点运行
+  workflow_dispatch:
+
+jobs:
+  speedtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run IPTV speedtest
+        run: python iptv_multicast_speedtest.py
+
+      - name: Commit results
+        run: |
+          git config --global user.name "tali-ban-dot"
+          git config --global user.email "你的邮箱@example.com"
+          git add best_multicast.txt
+          git commit -m "Update best multicast IPTV list" || echo "No changes to commit"
+          git push
