@@ -19,7 +19,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests chardet
 
       - name: Run IPTV speedtest
         run: python iptv_multicast_speedtest.py
