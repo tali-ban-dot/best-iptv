@@ -1,60 +1,68 @@
+import requests
 import subprocess
 import json
 from pathlib import Path
 
-# 输入源文件
-INPUT_FILE = "streams.txt"
+M3U_URL = "https://raw.githubusercontent.com/YanG-1989/m3u/refs/heads/main/Migu.m3u"
 M3U_FILE = "valid_streams.m3u"
 TXT_FILE = "valid_streams.txt"
 REPORT_FILE = "test_report.json"
 
 def check_stream(url: str, timeout: int = 5) -> bool:
-    """
-    用 ffmpeg 测试流是否可用，超时/错误视为不可用
-    """
+    """用 ffmpeg 测试流是否可用"""
     try:
-        cmd = [
-            "ffmpeg", "-v", "error",
-            "-i", url,
-            "-t", str(timeout),
-            "-f", "null", "-"
-        ]
+        cmd = ["ffmpeg", "-v", "error", "-i", url, "-t", str(timeout), "-f", "null", "-"]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout+3)
         return result.returncode == 0
     except Exception:
         return False
 
 def main():
-    input_path = Path(INPUT_FILE)
-    if not input_path.exists():
-        print(f"❌ {INPUT_FILE} 不存在，请先添加直播源！")
+    try:
+        resp = requests.get(M3U_URL, timeout=15)
+        resp.raise_for_status()
+        lines = resp.text.splitlines()
+    except Exception as e:
+        print(f"❌ 抓取 M3U 失败: {e}")
         return
 
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
-        streams = [line.strip() for line in f if line.strip()]
+    streams = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("#EXTINF"):
+            # 取频道名
+            parts = line.split(",", 1)
+            name = parts[1].strip() if len(parts) > 1 else "未知频道"
+            # 下一行应该是 URL
+            if i + 1 < len(lines) and lines[i+1].startswith("http"):
+                url = lines[i+1].strip()
+                streams.append({"name": name, "url": url})
+                i += 1
+        i += 1
 
     valid_streams = []
     report = []
 
-    for url in streams:
-        ok = check_stream(url)
-        report.append({"url": url, "valid": ok})
+    for s in streams:
+        ok = check_stream(s["url"])
+        report.append({"name": s["name"], "url": s["url"], "valid": ok})
         if ok:
-            valid_streams.append(url)
-            print(f"✅ 有效: {url}")
+            valid_streams.append(s)
+            print(f"✅ 有效: {s['name']} -> {s['url']}")
         else:
-            print(f"❌ 无效: {url}")
+            print(f"❌ 无效: {s['name']} -> {s['url']}")
 
     # 写入 m3u
     with open(M3U_FILE, "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
-        for url in valid_streams:
-            f.write(f"#EXTINF:-1,{url}\n{url}\n")
+        for s in valid_streams:
+            f.write(f"#EXTINF:-1,{s['name']}\n{s['url']}\n")
 
     # 写入 txt
     with open(TXT_FILE, "w", encoding="utf-8") as f:
-        for url in valid_streams:
-            f.write(url + "\n")
+        for s in valid_streams:
+            f.write(f"{s['name']},{s['url']}\n")
 
     # 写入报告
     with open(REPORT_FILE, "w", encoding="utf-8") as f:
