@@ -1,0 +1,55 @@
+```yaml
+name: Live Stream Test
+
+on:
+  schedule:
+    # 每天UTC时间2点运行（北京时间10点）
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # 允许手动触发
+  push:
+    paths:
+      - 'test_live_streams.py'
+      - '.github/workflows/test-streams.yml'
+
+jobs:
+  test-streams:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        python -m pip install --upgrade pip
+        pip install requests
+        
+    - name: Run stream test
+      run: |
+        python test_live_streams.py
+        
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: live-stream-results
+        path: |
+          valid_streams.m3u
+          valid_streams.txt
+          test_report.json
+        retention-days: 7
+        
+    - name: Commit and push if changed
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add valid_streams.m3u valid_streams.txt test_report.json
+        git diff --staged --quiet || git commit -m "Update valid live streams - $(date)"
+        git push
+```
