@@ -1,75 +1,83 @@
 import requests
 import subprocess
-import json
-from pathlib import Path
+import concurrent.futures
+import os
 
-# ===== 配置 =====
-M3U_URL = "https://raw.githubusercontent.com/YanG-1989/m3u/refs/heads/main/Migu.m3u"
-M3U_FILE = "valid_streams.m3u"
-TXT_FILE = "valid_streams.txt"
-REPORT_FILE = "test_report.json"
+# M3U接口
+m3u_url = "https://raw.githubusercontent.com/YanG-1989/m3u/refs/heads/main/Migu.m3u"
+timeout_requests = 10   # HTTP请求超时
+timeout_ffmpeg = 10     # ffmpeg拉流超时
 
-# ffmpeg 测试时间（秒）
-TEST_DURATION = 10
+output_m3u = "valid_streams.m3u"
+output_txt = "valid_streams.txt"
 
-def check_stream(url: str, timeout: int = TEST_DURATION) -> bool:
-    """用 ffmpeg 测试流是否可用"""
+# 读取 M3U 并解析
+def parse_m3u(content):
+    lines = content.splitlines()
+    streams = []
+    for i in range(len(lines)):
+        if lines[i].startswith("#EXTINF"):
+            name = lines[i].split(",", 1)[-1].strip()
+            url = lines[i+1].strip() if i+1 < len(lines) else ""
+            streams.append({"name": name, "url": url})
+    return streams
+
+# HTTP快速检查
+def check_http(stream):
     try:
-        cmd = ["ffmpeg", "-v", "error", "-i", url, "-t", str(timeout), "-f", "null", "-"]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout+5)
-        return result.returncode == 0
-    except Exception:
-        return False
+        r = requests.head(stream["url"], timeout=timeout_requests, allow_redirects=True)
+        if r.status_code == 200:
+            return stream
+    except:
+        pass
+    return None
+
+# 用ffmpeg拉取前10秒检测是否有效
+def check_ffmpeg(stream):
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "quiet",
+            "-i", stream["url"],
+            "-t", "10", "-f", "null", "-"
+        ]
+        subprocess.run(cmd, timeout=timeout_ffmpeg, check=True)
+        return stream
+    except:
+        return None
 
 def main():
-    # 抓取 M3U
-    try:
-        resp = requests.get(M3U_URL, timeout=15)
-        resp.raise_for_status()
-        lines = resp.text.splitlines()
-    except Exception as e:
-        print(f"❌ 抓取 M3U 失败: {e}")
-        return
+    r = requests.get(m3u_url, timeout=timeout_requests)
+    streams = parse_m3u(r.text)
+    print(f"解析到 {len(streams)} 个直播源")
 
-    # 解析 M3U
-    streams = []
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if line.startswith("#EXTINF"):
-            name = line.split(",", 1)[1].strip() if "," in line else "未知频道"
-            if i + 1 < len(lines) and lines[i+1].startswith("http"):
-                url = lines[i+1].strip()
-                streams.append({"name": name, "url": url})
-                i += 1
-        i += 1
-
-    # 检测有效源
     valid_streams = []
-    report = []
-    for s in streams:
-        ok = check_stream(s["url"], timeout=TEST_DURATION)
-        report.append({"name": s["name"], "url": s["url"], "valid": ok})
-        if ok:
-            valid_streams.append(s)
-            print(f"✅ 有效: {s['name']} -> {s['url']}")
-        else:
-            print(f"❌ 无效: {s['name']} -> {s['url']}")
 
-    # 写入 m3u
-    with open(M3U_FILE, "w", encoding="utf-8") as f:
+    # Step 1: HTTP快速筛选
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(check_http, streams))
+    streams_http_ok = [s for s in results if s]
+
+    print(f"HTTP检测通过 {len(streams_http_ok)} 个直播源")
+
+    # Step 2: ffmpeg拉流验证
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(check_ffmpeg, streams_http_ok))
+    valid_streams = [s for s in results if s]
+
+    print(f"最终有效直播源 {len(valid_streams)} 个")
+
+    # 输出M3U
+    with open(output_m3u, "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
         for s in valid_streams:
             f.write(f"#EXTINF:-1,{s['name']}\n{s['url']}\n")
 
-    # 写入 txt
-    with open(TXT_FILE, "w", encoding="utf-8") as f:
+    # 输出TXT
+    with open(output_txt, "w", encoding="utf-8") as f:
         for s in valid_streams:
             f.write(f"{s['name']},{s['url']}\n")
 
-    # 写入报告
-    with open(REPORT_FILE, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
+    print(f"已生成 {output_m3u} 和 {output_txt}")
 
 if __name__ == "__main__":
     main()
