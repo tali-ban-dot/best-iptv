@@ -8,7 +8,6 @@ on:
   push:
     paths:
       - 'test_live_streams.py'
-      - 'streams.txt'
       - '.github/workflows/test-streams.yml'
 
 jobs:
