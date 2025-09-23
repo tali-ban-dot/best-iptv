@@ -13,26 +13,26 @@ on:
 jobs:
   test-streams:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-        
+
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
         python -m pip install --upgrade pip
         pip install requests
-        
+
     - name: Run stream test
       run: python test_live_streams.py
-        
+
     - name: Upload test results
       uses: actions/upload-artifact@v4
       with:
@@ -43,7 +43,7 @@ jobs:
           test_report.json
         if-no-files-found: ignore
         retention-days: 7
-        
+
     - name: Commit and push if changed
       run: |
         git config --local user.email "action@github.com"
